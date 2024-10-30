@@ -20,7 +20,7 @@ import cbf
 import dynamics_gp
 import datetime
 from gym import spaces
-
+import os
 # ===========================
 #   Actor and Critic DNNs
 # ===========================
@@ -244,7 +244,15 @@ def build_summaries():
     episode_ave_max_q = tf.Variable(0.)
     tf.summary.scalar("Qmax Value", episode_ave_max_q)
 
-    summary_vars = [episode_reward, episode_ave_max_q]
+    ep_step = tf.Variable(0,)
+    tf.summary.scalar("step", ep_step)
+    ep_iter = tf.Variable(0,)
+    tf.summary.scalar("iter", ep_iter)
+
+    ep_cvt = tf.Variable(0,)
+    tf.summary.scalar("cvt", ep_cvt)
+
+    summary_vars = [episode_reward, episode_ave_max_q, ep_step, ep_iter, ep_cvt]
     summary_ops = tf.summary.merge_all()
 
     return summary_ops, summary_vars
@@ -253,12 +261,27 @@ def build_summaries():
 #   Agent Training
 # ===========================
 
+def arccs(sinth, costh):
+    eps = 0.9999  # fixme: avoid grad becomes inf when cos(theta) = 0
+    th = np.arccos(eps * costh)
+    th = th * (sinth > 0) + (2 * np.pi - th) * (sinth <= 0)
+    return th
+
+def is_in_constraint(s):
+    costh, sinth = s[0], s[1]
+    th = arccs(sinth, costh)
+    if np.abs(th) >=1:
+        return False
+    else:
+        return True
+
 def train(sess, env, args, actor, critic, actor_noise, reward_result, agent):
 
     # Set up summary Ops
     summary_ops, summary_vars = build_summaries()
 
     sess.run(tf.global_variables_initializer())
+    writer = tf.summary.FileWriter(args['summary_dir'], sess.graph)
 
     # Initialize target network weights
     actor.update_target_network()
@@ -271,7 +294,9 @@ def train(sess, env, args, actor, critic, actor_noise, reward_result, agent):
     # This hurts the performance on Pendulum but could be useful
     # in other environments.
     # tflearn.is_training(True)
-
+    counter_step = 0
+    counter_iter = 0
+    counter_cvt = 0
     paths=list()
     
     for i in range(int(args['max_episodes'])):
@@ -324,7 +349,9 @@ def train(sess, env, args, actor, critic, actor_noise, reward_result, agent):
             
             
                 s2, r, terminal, info = env.step(action_)
-
+                counter_step += 1
+                if not is_in_constraint(s2):
+                    counter_cvt += 1
                 replay_buffer.add(np.reshape(s, (actor.s_dim,)), np.reshape(a, (actor.a_dim,)), r,
                                   terminal, np.reshape(s2, (actor.s_dim,)))
 
@@ -356,7 +383,7 @@ def train(sess, env, args, actor, critic, actor_noise, reward_result, agent):
                     a_outs = actor.predict(s_batch)
                     grads = critic.action_gradients(s_batch, a_outs)
                     actor.train(s_batch, grads[0])
-
+                    counter_iter += 1
                     # Update target networks
                     actor.update_target_network()
                     critic.update_target_network()
@@ -371,9 +398,16 @@ def train(sess, env, args, actor, critic, actor_noise, reward_result, agent):
                 action.append(action_)
             
                 if terminal:
+                    summary_str = sess.run(summary_ops, feed_dict={
+                        summary_vars[0]: ep_reward,
+                        summary_vars[1]: ep_ave_max_q / float(j),
+                        summary_vars[2]: counter_step,
+                        summary_vars[3]: counter_iter,
+                        summary_vars[4]: counter_cvt,
+                    })
 
-                    #writer.add_summary(summary_str, i)
-                    #writer.flush()
+                    writer.add_summary(summary_str, counter_iter)
+                    writer.flush()
 
                     print('| Reward: {:d} | Episode: {:d} | Qmax: {:.4f}'.format(int(ep_reward), i, (ep_ave_max_q / float(j))))
                     reward_result[i] = ep_reward
@@ -458,18 +492,23 @@ if __name__ == '__main__':
     parser.add_argument('--max-episode-len', help='max length of 1 episode', default=200) 
     parser.add_argument('--render-env', help='render the gym env', action='store_false')
     parser.add_argument('--use-gym-monitor', help='record gym results', action='store_false')
-    parser.add_argument('--monitor-dir', help='directory for storing gym results', default='./results2/gym_ddpg')
-    parser.add_argument('--summary-dir', help='directory for storing tensorboard info', default='./results2/tf_ddpg')
+    parser.add_argument('--monitor-dir', help='directory for storing gym results', default='./results/gym_ddpg')
+    parser.add_argument('--summary-dir', help='directory for storing tensorboard info', default='./results/pendulum_ddpg_cbf')
 
     parser.set_defaults(render_env=False)
     parser.set_defaults(use_gym_monitor=False)
     
     args = vars(parser.parse_args())
-    
+
+    time_str_ = datetime.datetime.now().strftime("%y-%m-%d-%H-%M")
+    base_dir = os.path.abspath(os.path.dirname(os.path.dirname(os.path.abspath(os.path.dirname(__file__)))))
+    args["summary_dir"] = os.path.join(base_dir, "results", "pendulum_ddpg_cbf", "exp-" + datetime.datetime.now().strftime("%y-%m-%d-%H-%M"))
+
+    os.makedirs(args["summary_dir"], exist_ok=True)
     pp.pprint(args)
 
     reward_result = np.zeros(int(args['max_episodes']))
     [summary_ops, summary_vars, paths] = main(args, reward_result)
 
-    savemat('data4_' + datetime.datetime.now().strftime("%y-%m-%d-%H-%M") + '.mat',dict(data=paths, reward=reward_result))
+    savemat(os.path.join(args["summary_dir"], 'data4_' + time_str_ + '.mat'),dict(data=paths, reward=reward_result))
 
