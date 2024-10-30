@@ -34,15 +34,16 @@ def control_barrier(self, obs, u_rl, f, g, x, std):
     
     G = np.array([[-np.dot(self.H1,g), -np.dot(self.H2,g), -np.dot(self.H3,g), -np.dot(self.H4,g), 1, -1, g[1], -g[1]], [-1, -1, -1, -1, 0, 0, 0, 0]])
     G = np.transpose(G)
-
-    h = np.array([gamma_b*self.F + np.dot(self.H1,f) + np.dot(self.H1,g)*u_a - (1-gamma_b)*np.dot(self.H1,x) - kd*np.dot(np.abs(self.H1),std),
+    tmp = [gamma_b*self.F + np.dot(self.H1,f) + np.dot(self.H1,g)*u_a - (1-gamma_b)*np.dot(self.H1,x) - kd*np.dot(np.abs(self.H1),std),
                   gamma_b*self.F + np.dot(self.H2,f) + np.dot(self.H2,g)*u_a - (1-gamma_b)*np.dot(self.H2,x) - kd*np.dot(np.abs(self.H2),std),
                   gamma_b*self.F + np.dot(self.H3,f) + np.dot(self.H3,g)*u_a - (1-gamma_b)*np.dot(self.H3,x) - kd*np.dot(np.abs(self.H3),std),
                   gamma_b*self.F + np.dot(self.H4,f) + np.dot(self.H4,g)*u_a - (1-gamma_b)*np.dot(self.H4,x) - kd*np.dot(np.abs(self.H4),std),
                   -u_rl + self.torque_bound,
                   u_rl + self.torque_bound,
                   -f[1] - g[1]*u_rl + self.max_speed,
-                  f[1] + g[1]*u_rl + self.max_speed])
+                  f[1] + g[1]*u_rl + self.max_speed]
+    tmp2 = [ttt.item() for ttt in tmp]
+    h = np.array(tmp2)
     h = np.squeeze(h).astype(np.double)
     
     #Convert numpy arrays to cvx matrices to set up QP
