@@ -5,7 +5,10 @@ Author: Patrick Emami
 """
 import argparse
 import datetime
+import math
+import os
 import pprint as pp
+from typing import Union
 
 import car_simulator
 import numpy as np
@@ -17,6 +20,17 @@ from scipy.io import savemat
 # ===========================
 #   Actor and Critic DNNs
 # ===========================
+
+
+def is_in_constraint(s):
+    state = s.reshape(5, 3)
+    front_pos = state[2, 0]
+    ego_pos = state[3, 0]
+    behind_pos = state[4, 0]
+    if front_pos - ego_pos > 2.0 and ego_pos - behind_pos > 2.0:
+        return True
+    else:
+        return False
 
 
 class ActorNetwork(object):
@@ -229,7 +243,21 @@ def build_summaries():
     episode_ave_max_q = tf.Variable(0.0)
     tf.summary.scalar("Qmax Value", episode_ave_max_q)
 
-    summary_vars = [episode_reward, episode_ave_max_q]
+    ep_step = tf.Variable(
+        0,
+    )
+    tf.summary.scalar("step", ep_step)
+    ep_iter = tf.Variable(
+        0,
+    )
+    tf.summary.scalar("iter", ep_iter)
+
+    ep_cvt = tf.Variable(
+        0,
+    )
+    tf.summary.scalar("cvt", ep_cvt)
+
+    summary_vars = [episode_reward, episode_ave_max_q, ep_step, ep_iter, ep_cvt]
     summary_ops = tf.summary.merge_all()
 
     return summary_ops, summary_vars
@@ -264,6 +292,7 @@ def train(sess, env, args, actor, critic, actor_noise, reward_result):
 
     counter_step = 0
     counter_iter = 0
+    counter_cvt = 0
 
     for i in range(int(args["max_episodes"])):
 
@@ -282,8 +311,9 @@ def train(sess, env, args, actor, critic, actor_noise, reward_result):
 
             # print(a)
             s2, r, terminal, info = env.step(a[0])
-
             counter_step += 1
+            if not is_in_constraint(s2):
+                counter_cvt += 1
 
             replay_buffer.add(
                 np.reshape(s, (actor.s_dim,)),
@@ -332,6 +362,19 @@ def train(sess, env, args, actor, critic, actor_noise, reward_result):
             ep_reward += r
 
             if terminal:
+                summary_str = sess.run(
+                    summary_ops,
+                    feed_dict={
+                        summary_vars[0]: ep_reward,
+                        summary_vars[1]: ep_ave_max_q / float(j),
+                        summary_vars[2]: counter_step,
+                        summary_vars[3]: counter_iter,
+                        summary_vars[4]: counter_cvt,
+                    },
+                )
+
+                writer.add_summary(summary_str, counter_iter)
+                writer.flush()
 
                 print(
                     "| Reward: {:d} | Episode: {:d} | Qmax: {:.4f}".format(int(ep_reward), i, (ep_ave_max_q / float(j)))
@@ -401,19 +444,23 @@ if __name__ == "__main__":
     parser.add_argument("--minibatch-size", help="size of minibatch for minibatch-SGD", default=64)
 
     # run parameters
-    parser.add_argument("--env", help="choose the gym env- tested on {Pendulum-v0}", default="Pendulum-v0")
+    parser.add_argument("--env", help="choose the gym env- tested on {Pendulum-v0}", default="XXX-v0")
     parser.add_argument("--random-seed", help="random seed for repeatability", default=2912)
     parser.add_argument("--max-episodes", help="max num of episodes to do while training", default=1000)
     parser.add_argument("--max-episode-len", help="max length of 1 episode", default=80)
     parser.add_argument("--render-env", help="render the gym env", action="store_true")
     parser.add_argument("--use-gym-monitor", help="record gym results", action="store_true")
     parser.add_argument("--monitor-dir", help="directory for storing gym results", default="./results2/gym_ddpg")
-    parser.add_argument("--summary-dir", help="directory for storing tensorboard info", default="./results2/tf_ddpg")
-
+    parser.add_argument("--summary-dir", help="directory for storing tensorboard info", default="./results/car_ddpg")
     parser.set_defaults(render_env=False)
     parser.set_defaults(use_gym_monitor=False)
 
     args = vars(parser.parse_args())
+    base_dir = os.path.abspath(os.path.dirname(os.path.dirname(os.path.abspath(os.path.dirname(__file__)))))
+    args["summary_dir"] = os.path.join(
+        base_dir, "results", "car_ddpg", "exp-" + datetime.datetime.now().strftime("%y-%m-%d-%H-%M")
+    )
+    os.makedirs(args["summary_dir"], exist_ok=True)
 
     pp.pprint(args)
 
@@ -423,5 +470,6 @@ if __name__ == "__main__":
 
     print(reward_result)
     savemat(
-        "data2_" + datetime.datetime.now().strftime("%y-%m-%d-%H-%M") + ".mat", dict(data=paths, reward=reward_result)
+        os.path.join(args["summary_dir"], "data2_" + datetime.datetime.now().strftime("%y-%m-%d-%H-%M") + ".mat"),
+        dict(data=paths, reward=reward_result),
     )

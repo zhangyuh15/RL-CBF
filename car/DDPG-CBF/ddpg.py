@@ -5,7 +5,10 @@ Author: Richard Cheng
 """
 import argparse
 import datetime
+import math
+import os
 import pprint as pp
+from typing import Union
 
 import cbf
 import dynamics_gp
@@ -20,9 +23,19 @@ from learner import LEARNER
 from replay_buffer import ReplayBuffer
 from scipy.io import savemat
 
+
 # ===========================
 #   Actor and Critic DNNs
 # ===========================
+def is_in_constraint(s):
+    state = s.reshape(5, 3)
+    front_pos = state[2, 0]
+    ego_pos = state[3, 0]
+    behind_pos = state[4, 0]
+    if front_pos - ego_pos > 2.0 and ego_pos - behind_pos > 2.0:
+        return True
+    else:
+        return False
 
 
 class ActorNetwork(object):
@@ -234,7 +247,21 @@ def build_summaries():
     episode_ave_max_q = tf.Variable(0.0)
     tf.summary.scalar("Qmax Value", episode_ave_max_q)
 
-    summary_vars = [episode_reward, episode_ave_max_q]
+    ep_step = tf.Variable(
+        0,
+    )
+    tf.summary.scalar("step", ep_step)
+    ep_iter = tf.Variable(
+        0,
+    )
+    tf.summary.scalar("iter", ep_iter)
+
+    ep_cvt = tf.Variable(
+        0,
+    )
+    tf.summary.scalar("cvt", ep_cvt)
+
+    summary_vars = [episode_reward, episode_ave_max_q, ep_step, ep_iter, ep_cvt]
     summary_ops = tf.summary.merge_all()
 
     return summary_ops, summary_vars
@@ -251,6 +278,7 @@ def train(sess, env, args, actor, critic, actor_noise, reward_result, agent):
     summary_ops, summary_vars = build_summaries()
 
     sess.run(tf.global_variables_initializer())
+    writer = tf.summary.FileWriter(args["summary_dir"], sess.graph)
 
     # Initialize target network weights
     actor.update_target_network()
@@ -263,6 +291,10 @@ def train(sess, env, args, actor, critic, actor_noise, reward_result, agent):
     # This hurts the performance on Pendulum but could be useful
     # in other environments.
     tflearn.is_training(True)
+
+    counter_step = 0
+    counter_iter = 0
+    counter_cvt = 0
 
     paths = list()
 
@@ -315,7 +347,9 @@ def train(sess, env, args, actor, critic, actor_noise, reward_result, agent):
                 action_ = action_RL + u_bar_
 
                 s2, r, terminal = env.step(action_)
-
+                counter_step += 1
+                if not is_in_constraint(s2):
+                    counter_cvt += 1
                 # replay_buffer.add(np.reshape(s, (actor.s_dim,)), np.reshape(a, (actor.a_dim,)), r,
                 #                  terminal, np.reshape(s2, (actor.s_dim,)))
 
@@ -355,6 +389,7 @@ def train(sess, env, args, actor, critic, actor_noise, reward_result, agent):
                     a_outs = actor.predict(s_batch)
                     grads = critic.action_gradients(s_batch, a_outs)
                     actor.train(s_batch, grads[0])
+                    counter_iter += 1
 
                     # Update target networks
                     actor.update_target_network()
@@ -371,8 +406,19 @@ def train(sess, env, args, actor, critic, actor_noise, reward_result, agent):
 
                 if j == 80 - 1:
 
-                    # writer.add_summary(summary_str, i)
-                    # writer.flush()
+                    summary_str = sess.run(
+                        summary_ops,
+                        feed_dict={
+                            summary_vars[0]: ep_reward,
+                            summary_vars[1]: ep_ave_max_q / float(j),
+                            summary_vars[2]: counter_step,
+                            summary_vars[3]: counter_iter,
+                            summary_vars[4]: counter_cvt,
+                        },
+                    )
+
+                    writer.add_summary(summary_str, counter_iter)
+                    writer.flush()
 
                     print(
                         "| Reward: {:d} | Episode: {:d} | Qmax: {:.4f}".format(
@@ -455,25 +501,31 @@ if __name__ == "__main__":
     parser.add_argument("--minibatch-size", help="size of minibatch for minibatch-SGD", default=64)
 
     # run parameters
-    parser.add_argument("--env", help="choose the gym env- tested on {Pendulum-v0}", default="Pendulum-v0")
+    parser.add_argument("--env", help="choose the gym env- tested on {Pendulum-v0}", default="XXXX-v0")
     parser.add_argument("--random-seed", help="random seed for repeatability", default=6981)  # 1234 default
     parser.add_argument("--max-episodes", help="max num of episodes to do while training", default=200)  # 50000 default
     parser.add_argument("--max-episode-len", help="max length of 1 episode", default=80)  # 1000 default
     parser.add_argument("--render-env", help="render the gym env", action="store_false")
     parser.add_argument("--use-gym-monitor", help="record gym results", action="store_false")
     parser.add_argument("--monitor-dir", help="directory for storing gym results", default="./results2/gym_ddpg")
-    parser.add_argument("--summary-dir", help="directory for storing tensorboard info", default="./results2/tf_ddpg")
-
+    parser.add_argument(
+        "--summary-dir", help="directory for storing tensorboard info", default="./results/car_ddpg_cbf"
+    )
     parser.set_defaults(render_env=False)
     parser.set_defaults(use_gym_monitor=False)
 
     args = vars(parser.parse_args())
-
+    base_dir = os.path.abspath(os.path.dirname(os.path.dirname(os.path.abspath(os.path.dirname(__file__)))))
+    args["summary_dir"] = os.path.join(
+        base_dir, "results", "car_ddpg_cbf", "exp-" + datetime.datetime.now().strftime("%y-%m-%d-%H-%M")
+    )
+    os.makedirs(args["summary_dir"], exist_ok=True)
     pp.pprint(args)
 
     reward_result = np.zeros(3000)
     [summary_ops, summary_vars, paths] = main(args, reward_result)
 
     savemat(
-        "data1_" + datetime.datetime.now().strftime("%y-%m-%d-%H-%M") + ".mat", dict(data=paths, reward=reward_result)
+        os.path.join(args["summary_dir"], "data2_" + datetime.datetime.now().strftime("%y-%m-%d-%H-%M") + ".mat"),
+        dict(data=paths, reward=reward_result),
     )
